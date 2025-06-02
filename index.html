@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cybernetic Morph Card</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;700&display=swap" rel="stylesheet">
+    <style>
+        /* Basic reset and body styling */
+        body {
+            margin: 0;
+            overflow: hidden; /* Hide scrollbars */
+            font-family: 'Inter', sans-serif;
+            background: radial-gradient(circle at center, #1a1a2e 0%, #0a0a1a 100%); /* Dark metallic gradient */
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            color: #e0e0e0; /* Default text color for general elements */
+        }
+
+        /* Canvas for Three.js rendering */
+        #canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: block;
+            z-index: 1; /* Below the card container (which acts as hover target) */
+        }
+
+        /* Container for the 3D card (acts as hover target) */
+        .card-container {
+            position: relative;
+            width: 400px; /* Fixed width for the interactive area */
+            height: 250px; /* Fixed height for the interactive area */
+            z-index: 2; /* Above the background canvas */
+            /* This container acts as the hover target, it's transparent */
+        }
+
+        /* Responsive adjustments for the hover target area */
+        @media (max-width: 768px) {
+            .card-container {
+                width: 90vw; /* Responsive width */
+                height: 56vw; /* Maintain aspect ratio */
+                max-height: 350px; /* Cap max height */
+            }
+        }
+    </style>
+</head>
+<body>
+    <canvas id="canvas"></canvas>
+    <div class="card-container" id="cardContainer">
+        <!-- All text is now rendered directly on the 3D object, no HTML overlay needed -->
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script>
+        // --- Three.js Setup ---
+        let scene, camera, renderer, light, ambientLight;
+        let transformingObject; // The main group for our transforming panels
+        let panels = []; // Array to hold individual panel meshes
+        let transformationProgress = 0; // 0 for initial state, 1 for transformed state
+        let targetTransformationProgress = 0; // Target for smooth animation
+        const transformationSpeed = 0.05; // How fast transformation progresses
+        const cardContainer = document.getElementById('cardContainer');
+
+        let initialCameraZ = 5; // Initial camera Z position
+        let targetCameraZ = initialCameraZ; // Target camera Z position for zoom effect
+        const cameraZoomSpeed = 0.05; // How fast camera zooms
+
+        // Define panel dimensions and positions for initial (compact) and final (unfolded) states
+        const panelData = [
+            // Main central panel (becomes the base for text)
+            {
+                size: [2.5, 1.5, 0.2],
+                initialPos: [0, 0, 0],
+                finalPos: [0, 0, 0],
+                initialRot: [0, 0, 0],
+                finalRot: [0, 0, 0],
+                material: null // Material will be assigned in init()
+            },
+            // Top panel
+            {
+                size: [2.5, 0.5, 0.2],
+                initialPos: [0, 1, 0],
+                finalPos: [0, 1.2, 0.5],
+                initialRot: [0, 0, 0],
+                finalRot: [Math.PI / 8, 0, 0],
+                material: null
+            },
+            // Bottom panel
+            {
+                size: [2.5, 0.5, 0.2],
+                initialPos: [0, -1, 0],
+                finalPos: [0, -1.2, 0.5],
+                initialRot: [0, 0, 0],
+                finalRot: [-Math.PI / 8, 0, 0],
+                material: null
+            },
+            // Left panel
+            {
+                size: [0.5, 1.5, 0.2],
+                initialPos: [-1.5, 0, 0],
+                finalPos: [-1.8, 0, 0.5],
+                initialRot: [0, 0, 0],
+                finalRot: [0, -Math.PI / 8, 0],
+                material: null
+            },
+            // Right panel
+            {
+                size: [0.5, 1.5, 0.2],
+                initialPos: [1.5, 0, 0],
+                finalPos: [1.8, 0, 0.5],
+                initialRot: [0, 0, 0],
+                finalRot: [0, Math.PI / 8, 0],
+                material: null
+            }
+        ];
+
+
+        // Function to create a canvas texture from multiple lines of text
+        function createTextTexture(lines, fontSizes, textColors, backgroundColor) {
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+
+            // Set a size that accommodates the text well (powers of 2 for better texture performance)
+            canvas.width = 1024; // Increased width for longer lines
+            canvas.height = 1024; // Increased height for multiple lines and better spacing
+
+            context.fillStyle = backgroundColor;
+            context.fillRect(0, 0, canvas.width, canvas.height);
+
+            context.textAlign = 'center';
+            context.textBaseline = 'top'; // Align text from the top of the line
+
+            let currentY = (canvas.height / 2); // Start Y for centering the block of text
+
+            // Pre-calculate total height of the text block for perfect vertical centering
+            let calculatedTotalTextHeight = 0;
+            lines.forEach((line, i) => {
+                // Use a larger multiplier for line height to ensure more space
+                calculatedTotalTextHeight += fontSizes[i] * 1.4; // Increased line height for better spacing
+            });
+            currentY -= calculatedTotalTextHeight / 2; // Adjust starting Y to center the whole block
+
+            lines.forEach((line, i) => {
+                context.font = `${fontSizes[i]}px Inter, sans-serif`;
+                context.fillStyle = textColors[i];
+                context.fillText(line, canvas.width / 2, currentY);
+                currentY += fontSizes[i] * 1.4; // Move down for the next line, using increased line height
+            });
+
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        // Initialize the Three.js scene
+        function init() {
+            // Scene
+            scene = new THREE.Scene();
+
+            // Camera
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.z = initialCameraZ; // Set initial camera Z position
+
+            // Renderer
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0x000000, 0); // Transparent background
+
+            // Lighting
+            ambientLight = new THREE.AmbientLight(0x404040, 2); // Soft white light
+            scene.add(ambientLight);
+
+            light = new THREE.DirectionalLight(0xffffff, 1); // Directional light for metallic sheen
+            light.position.set(5, 5, 5).normalize();
+            scene.add(light);
+
+            // --- Transforming Object (Panels) ---
+            transformingObject = new THREE.Group();
+            scene.add(transformingObject);
+
+            const panelMaterial = new THREE.MeshStandardMaterial({
+                color: 0x333333, // Dark metallic gray
+                metalness: 0.8,
+                roughness: 0.4,
+                emissive: 0x000000, // No self-illumination initially
+                emissiveIntensity: 0.5 // Adjust as needed
+            });
+
+            // Create the texture for all lines of text
+            const allTextTexture = createTextTexture(
+                ["Riyad Hossain", "Wellington Marketing FZE", "Dubai, UAE", "riyad06dev@gmail.com"],
+                [100, 60, 45, 45], // Significantly increased font sizes
+                ["#ffffff", "#e0e0e0", "#e0e0e0", "#ffffff"], // Pure white for name/email, off-white for others
+                "rgba(0,0,0,0.1)" // Very subtle dark transparent background
+            );
+
+            const glowingMaterial = new THREE.MeshStandardMaterial({
+                color: 0x00eaff, // Electric cyan base color
+                emissive: 0x00eaff,
+                emissiveIntensity: 0.0, // Start with 0 emissive intensity (text hidden)
+                metalness: 0.2,
+                roughness: 0.5,
+                map: allTextTexture, // Apply the combined texture
+                transparent: true // Enable transparency for the texture
+            });
+
+            // Assign materials to panelData objects
+            panelData[0].material = glowingMaterial; // Main central panel gets the glowing material with all text texture
+            for (let i = 1; i < panelData.length; i++) {
+                panelData[i].material = panelMaterial;
+            }
+
+            panelData.forEach(data => {
+                const geometry = new THREE.BoxGeometry(...data.size);
+                const panel = new THREE.Mesh(geometry, data.material);
+                panel.position.set(...data.initialPos);
+                panel.rotation.set(...data.initialRot);
+                transformingObject.add(panel);
+                panels.push(panel);
+            });
+
+            // Event Listeners for hover interaction on the card container
+            cardContainer.addEventListener('mouseenter', onCardMouseEnter, false);
+            cardContainer.addEventListener('mouseleave', onCardMouseLeave, false);
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        // Handle mouse entering the card container
+        function onCardMouseEnter() {
+            targetTransformationProgress = 1; // Start transformation
+            targetCameraZ = 3.0; // Zoom in even closer
+            // Animate emissive intensity to reveal text glow
+            // Using a simple check; for smoother animation, a tweening library would be better.
+            if (panels[0].material.emissiveIntensity !== 1.2) { // Target a higher intensity
+                panels[0].material.emissiveIntensity = 1.2;
+            }
+        }
+
+        // Handle mouse leaving the card container
+        function onCardMouseLeave() {
+            targetTransformationProgress = 0; // Revert transformation
+            targetCameraZ = initialCameraZ; // Zoom out
+            // Animate emissive intensity to hide text glow
+            if (panels[0].material.emissiveIntensity !== 0.0) {
+                panels[0].material.emissiveIntensity = 0.0;
+            }
+        }
+
+        // Handle window resizing
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Smoothly interpolate transformation progress
+            transformationProgress += (targetTransformationProgress - transformationProgress) * transformationSpeed;
+
+            // Smoothly interpolate camera zoom
+            camera.position.z = THREE.MathUtils.lerp(camera.position.z, targetCameraZ, cameraZoomSpeed);
+            camera.updateProjectionMatrix(); // Important to update after changing position
+
+            // Apply transformation to panels
+            panels.forEach((panel, index) => {
+                const data = panelData[index];
+
+                // Lerp position
+                panel.position.x = THREE.MathUtils.lerp(data.initialPos[0], data.finalPos[0], transformationProgress);
+                panel.position.y = THREE.MathUtils.lerp(data.initialPos[1], data.finalPos[1], transformationProgress);
+                panel.position.z = THREE.MathUtils.lerp(data.initialPos[2], data.finalPos[2], transformationProgress);
+
+                // Lerp rotation
+                panel.rotation.x = THREE.MathUtils.lerp(data.initialRot[0], data.finalRot[0], transformationProgress);
+                panel.rotation.y = THREE.MathUtils.lerp(data.initialRot[1], data.finalRot[1], transformationProgress);
+                panel.rotation.z = THREE.MathUtils.lerp(data.initialRot[2], data.finalRot[2], transformationProgress);
+            });
+
+            // Rotate the entire transforming object slightly for dynamic view
+            transformingObject.rotation.y += 0.005;
+            transformingObject.rotation.x = Math.sin(Date.now() * 0.0005) * 0.1; // Subtle up/down bob
+
+            renderer.render(scene, camera);
+        }
+
+        // Initialize and start the animation when the window loads
+        window.onload = function () {
+            init();
+            animate();
+        };
+    </script>
+</body>
+</html>
